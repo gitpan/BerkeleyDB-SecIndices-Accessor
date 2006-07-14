@@ -1,0 +1,6 @@
+Revision history for Perl extension BerkeleyDB::SecIndices::Accessor.
+
+0.01  Wed Jul 12 12:25:04 2006
+	- original version; created by h2xs 1.23 with options
+		-X -n BerkeleyDB::SecIndices::Accessor
+
