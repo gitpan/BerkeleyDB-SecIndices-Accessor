@@ -16,11 +16,10 @@ our @EXPORT_OK = ( @{ $EXPORT_TAGS{'const'} } );
 
 our @EXPORT = qw(EGET EGTS EEPT EPUT ELCK EUPD);
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 use Carp qw(croak);
-# specific bug fix for ver 0.27 invovled
-use BerkeleyDB 0.27;
+use BerkeleyDB;
 use File::Spec ();
 use Storable qw(freeze thaw);
 local $Storable::canonical = 1;
@@ -551,8 +550,10 @@ BEGIN {
                              $rc = $cursor->c_pget(
                                  $k, $pk, $v, DB_NEXT_DUP)) {
                             last FETCH if $i == $n;
-                            # Bug fix for BerkeleyDB v0.27
-                            $pk = unpack("L", $pk) - 1;
+                            if ($BerkeleyDB::VERSION < 0.29) {
+                                # Bug fix for BerkeleyDB v0.27
+                                $pk = unpack("L", $pk) - 1;
+                            }
                             if ($returnValue) {
                                 my $entry = {
                                     KEY     => $pk,
@@ -573,8 +574,10 @@ BEGIN {
                         for (; $rc == 0; 
                              $rc = $cursor->c_pget(
                                  $k, $pk, $v, DB_NEXT_DUP)) {
-                            # Bug fix for BerkeleyDB v0.27
-                            $pk = unpack("L", $pk) - 1;
+                            if ($BerkeleyDB::VERSION < 0.29) {
+                                # Bug fix for BerkeleyDB v0.27
+                                $pk = unpack("L", $pk) - 1;
+                            }
                             my $entry;
                             if ($returnValue) {
                                 $entry = {
@@ -612,9 +615,11 @@ BEGIN {
                     # FIXME db_stat first to get key count
                     while ($cursor->c_pget(
                         $k, $pk, $v, DB_NEXT) == 0) {
-                        # Bug fix for BerkeleyDB v0.27
-                        $pk = unpack("L", $pk) - 1;
-                        #print STDERR 'length of key:'. length($k). "\n";
+                        if ($BerkeleyDB::VERSION < 0.29) {
+                            # Bug fix for BerkeleyDB v0.27
+                            $pk = unpack("L", $pk) - 1;
+                            #print STDERR 'length of key:'. length($k). "\n";
+                        }
                         if ($value) {
                             push @{$ret->{$k}}, { 
                                 KEY     => $pk,
