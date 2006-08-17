@@ -4,3 +4,7 @@ Revision history for Perl extension BerkeleyDB::SecIndices::Accessor.
 	- original version; created by h2xs 1.23 with options
 		-X -n BerkeleyDB::SecIndices::Accessor
 
+0.02  Sync-ed with new uploaded BerkeleyDB 0.28
+
+0.03  Added new PUT2 method
+

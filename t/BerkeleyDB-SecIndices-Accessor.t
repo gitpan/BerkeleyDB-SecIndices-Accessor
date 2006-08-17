@@ -75,7 +75,7 @@ my @methods = (qw(___dbenv _student _student_index_name
                  __student_index_classs __student_index_grades
                  __student_index_scores __student_index_name_dups 
                  __student_index_class_dups __student_index_grade_dups
-                 __student_index_score_dups));
+                 __student_index_score_dups put2_student));
 can_ok('BerkeleyDB::SecIndices::Accessor', @methods);
 
 my $student = [];

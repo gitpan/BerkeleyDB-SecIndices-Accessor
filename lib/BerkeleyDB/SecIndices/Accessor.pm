@@ -9,14 +9,14 @@ require Exporter;
 our @ISA = qw(Exporter);
 
 our %EXPORT_TAGS = ( 'const' => [ qw(ELCK EPUT EDEL EUPD EGET EGTS
-                                     EDUP EEPT
+                                     EDUP EEPT ELOCK TRUE
 ) ] );
 
 our @EXPORT_OK = ( @{ $EXPORT_TAGS{'const'} } );
 
 our @EXPORT = qw(EGET EGTS EEPT EPUT ELCK EUPD);
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 use Carp qw(croak);
 use BerkeleyDB;
@@ -46,6 +46,7 @@ our $CB_DUPSORT;
 our $DEBUG = 0;
 
 sub ELCK() { -2; }
+sub ELOCK() { ELCK(); }
 sub EPUT() { -1; }
 sub EDEL() { -1; }
 sub EUPD() { -1; }
@@ -53,6 +54,7 @@ sub EGET() { -1; }
 sub EGTS() { -1; }
 sub EDUP() { -1; }
 sub EEPT() { -3; }
+sub TRUE() { 1;  }
 
 BEGIN {
     if ($BerkeleyDB::db_version < 3.3) {
@@ -251,14 +253,19 @@ BEGIN {
     foreach my $i (keys %$DB) {
         if ($i !~ m/INDEX$/o) {
             # primary database
-            my $put = 'put_'. lc($i);
-            my $upd = 'upd_'. lc($i);
-            my $get = 'get_'. lc($i);
-            my $gets = 'get_'. lc($i). 's';
+            my $put   = 'put_'. lc($i);
+            my $put2  = 'put2_'. lc($i);
+            my $upd   = 'upd_'. lc($i);
+            # TODO: update version 2
+            my $upd2  = 'upd2_'. lc($i);
+            my $get   = 'get_'. lc($i);
+            my $gets  = 'get_'. lc($i). 's';
             my $count = '__'. lc($i). 's';
-            my $dels = 'del_'. lc($i). 's';
+            my $dels  = 'del_'. lc($i). 's';
             $STUBS->{$i}->{PUT}   = sub { __PACKAGE__->$put(@_); };
+            $STUBS->{$i}->{PUT2}  = sub { __PACKAGE__->$put2(@_); };
             $STUBS->{$i}->{UPD}   = sub { __PACKAGE__->$upd(@_); };
+            #$STUBS->{$i}->{UPD2}  = sub { __PACKAGE__->$upd2(@_); };
             $STUBS->{$i}->{GET}   = sub { __PACKAGE__->$get(@_); };
             $STUBS->{$i}->{GETS}  = sub { __PACKAGE__->$gets(@_); };
             $STUBS->{$i}->{COUNT} = sub { __PACKAGE__->$count(@_); };
@@ -298,7 +305,50 @@ BEGIN {
                     # no cache in memo
                     $db_pool->{$key}->db_sync();
                     $lock->cds_unlock();
-                    return $rc == 0 ? 0 : EPUT;
+                    return $rc == 0 ? TRUE : EPUT;
+                };
+                
+                *$put2 = sub {
+                    my ( $self, $rpairs ) = @_;
+                    return TRUE if keys %$rpairs == 0;
+                    
+                    croak("ref $_[1] ne 'HASH'") unless 
+                      ref $rpairs eq 'HASH';
+                    # check required index fields
+                    foreach my $field (@{$required_index->{$i}}) {
+                        my $v;
+                        while (( undef, $v ) = each %$rpairs) {
+                            if (not exists $v->{$field}) {
+                                croak("required index field $field ".
+                                        "not found");
+                            }
+                        }
+                    }
+                    my $key = $makekey->($i);
+                    # validate $lock
+                    my $lock;
+                    my $retry = 0;
+                    LOCK:
+                    {
+                        $lock = $db_pool->{$key}->cds_lock();
+                        last LOCK if defined $lock;
+                        sleep 3;
+                        redo LOCK if ++$retry < $LOCK_RETRY_MAX;
+                    }
+                    unless (defined $lock) {
+                        return ELOCK;
+                    }
+                    
+                    my ( $k, $v, $rc );
+                    $rc = 0;
+                    while (( $k, $v ) = each %$rpairs) {
+                        $rc += $db_pool->{$key}->db_put(
+                            $k, freeze($v), DB_NOOVERWRITE);
+                    }
+                    # no cache in memo
+                    $db_pool->{$key}->db_sync();
+                    $lock->cds_unlock();
+                    return $rc == 0 ? TRUE : EPUT;
                 };
             }
             else {
@@ -342,6 +392,47 @@ BEGIN {
                     $lock->cds_unlock();
                     return $rc == 0 ? $first_key : EPUT;
                 };
+                
+                *$put2 = sub {
+                    my ( $self, $hcontent_array, $key_array ) = @_;
+                    return TRUE if @$hcontent_array == 0;
+                    croak('ref $_[1]->[0] ne "HASH"') unless 
+                      ref($hcontent_array->[0]) eq 'HASH';
+                    # check required index fields
+                    foreach my $field (@{$required_index->{$i}}) {
+                        if (not exists $hcontent_array->[0]->{$field}) {
+                            croak("required index field $field ".
+                                    "not found");
+                        }
+                    }
+                    my $key = $makekey->($i);
+                    # validate $lock
+                    my $lock;
+                    my $retry = 0;
+                    LOCK:
+                    {
+                        $lock = $db_pool->{$key}->cds_lock();
+                        last LOCK if defined $lock;
+                        sleep 3;
+                        redo LOCK if ++$retry < $LOCK_RETRY_MAX;
+                    }
+                    unless (defined $lock) {
+                        return ELOCK;
+                    }
+                    my ( $k, $rc, $rc_all );
+                    $rc_all = 0;
+                    foreach my $v (@$hcontent_array) {
+                        $k = -1;
+                        $rc = $db_pool->{$key}->db_put(
+                            $k, freeze($v), DB_APPEND);
+                        push @$key_array, $k if $rc == 0;
+                        $rc_all += $rc;
+                    }
+                    # no cache in memo
+                    $db_pool->{$key}->db_sync();
+                    $lock->cds_unlock();
+                    return $rc_all == 0 ? TRUE : EPUT;
+                }; 
             }
             
             *$upd = sub {
@@ -790,14 +881,23 @@ content should be:
 HOME: /path/to/your/database/home
 
 DATABASE:
+
   STUDENT:
+
     FILE: student.db
+
   STUDENT_INDEX:
+
     FILE: indices_student.db
+
     SUBS: 
+
       - NAME
+
       - CLASS
+
       - GRADE
+
       - SCORE
 
 #### database configuration end ####
@@ -826,8 +926,11 @@ Next, a DB_CONFIG file is required under the directory specified by
 'HOME' key in configuration file. A sample content of this file:
 
 #### DB_CONFIG start ####
+
 set_data_dir       /path/to/create/.db/files
+
 set_shm_key        20
+
 #### DB_CONFIG end ####
 
 set_data_dir specifies the path to create all *.db files. Since
@@ -930,8 +1033,8 @@ return the first new key on success, EPUT or ELCK on failure.
 
 =item PUT method for standalone Btree/Hash database
 
-For each standalone Btree/Hash database declared in cofiguration file,
-module will generate a subroutine to put new key/record into datase.
+For each standalone Btree/Hash database declared in configuration file,
+module will generate a subroutine to put new key/value into database.
 
 C<< BerkeleyDB::SecIndices::Accessor::->put_<lc(dbname)>->($key,
 $entry) >>
@@ -940,7 +1043,42 @@ C<<
 BerkeleyDB::SecIndices::Accessor::->_stubs->{dbname}->{PUT}->($key,
 $entry) >> 
 
-return 0 on success, EPUT or ELCK on failure.
+return TRUE on success, EPUT or ELCK on failure.
+
+=item put2_student(\@hash_values, \@new_keys)
+
+For each primary database declared as type of Recno in configuration
+file, module will generate a subroutine to put new HASH records into
+database. This will lead to a new index record created in each
+secondary index database.
+
+C<< BerkeleyDB::SecIndices::Accessor::->_put2_student(\@entries,
+\@keys) >>
+
+C<<
+BerkeleyDB::SecIndices::Accessor::->_stubs->{STUDENT}->{PUT2}->(\@entries,
+\@keys) >>
+
+return TRUE on success, EPUT or ELCK on failure.
+The keys of new created records will be filled in C<< @keys >> as the
+same sequence of entries in C<< @entries >>.
+
+=item PUT2 method for standalone Btree/Hash database
+
+For each standalone Btree/Hash database declared in configuration
+file, module will generate a subroutine to put new key/value pairs
+into database.
+
+C<< BerkeleyDB::SecIndices::Accessor::->put2_<lc(dbname)>->(\%pairs,
+\@keys) >>
+
+C<<
+BerkeleyDB::SecIndices::Accessor::->_stubs->{dbname}->{PUT2}->(\%pairs,
+\@keys) >>
+
+return TRUE on success, EPUT or ELCK on failure.
+The keys of new created records will be filled in C<< @keys >>. 
+B<Note:> Since using HASH, sequence of keys is not guaranteed.
 
 =item upd_student($key, $entry)
 
@@ -1116,7 +1254,7 @@ croak in case the index database corrupted.
 
 =head2 EXPORT
 
-EGET EPUT EDEL ELCK ...
+EGET EPUT EDEL ELCK ... TRUE
 
 Export _ALL_ operation check flags by C< use
 BerkeleyDB::SecIndices::Accessor qw(:const) >
@@ -1135,6 +1273,8 @@ will get a warning message.
 =head1 TODO
 
 Traditional transaction mode support.
+
+UPD2 similar to PUT2.
 
 =head1 SEE ALSO
 
