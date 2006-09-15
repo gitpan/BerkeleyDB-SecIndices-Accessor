@@ -16,7 +16,7 @@ our @EXPORT_OK = ( @{ $EXPORT_TAGS{'const'} } );
 
 our @EXPORT = qw(EGET EGTS EEPT EPUT ELCK EUPD);
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 use Carp qw(croak);
 use BerkeleyDB;
@@ -627,36 +627,82 @@ BEGIN {
                         $cursor->c_close();
                         croak("bad secondary index found");
                     }
-                    if (defined $n and defined $offset) {
+                    if ($rc == DB_KEYEMPTY or $rc == DB_NOTFOUND) {
+                        $cursor->c_close();
+                        return $ret;
+                    }
+                    my $dup_count = 0;
+                    $rc = $cursor->c_count($dup_count);
+                    unless ($rc == 0) {
+                        $cursor->c_close();
+                        croak("cannot count duplicate keys");
+                    }
+                    if ($n and defined $offset) {
                         # splice
-                        OFFSET:
-                        for (my $i = 0; $rc == 0; 
-                             $rc = $cursor->c_pget(
-                                 $k, $pk, $v, DB_NEXT_DUP)) {
-                            last OFFSET if $i == $offset;
-                            $i++;
-                        }
-                        FETCH:
-                        for (my $i = 0; $rc == 0; 
-                             $rc = $cursor->c_pget(
-                                 $k, $pk, $v, DB_NEXT_DUP)) {
-                            last FETCH if $i == $n;
-                            if ($BerkeleyDB::VERSION < 0.29) {
+                        if ($offset >= 0) {
+                            OFFSET:
+                            for (my $i = 0; $rc == 0; 
+                                 $rc = $cursor->c_pget(
+                                     $k, $pk, $v, DB_NEXT_DUP)) {
+                                last OFFSET if $i == $offset;
+                                $i++;
+                            }
+                            FETCH:
+                            for (my $i = 0; $rc == 0; 
+                                 $rc = $cursor->c_pget(
+                                     $k, $pk, $v, DB_NEXT_DUP)) {
+                                last FETCH if $i == $n;
+                                if ($BerkeleyDB::VERSION < 0.29) {
                                 # Bug fix for BerkeleyDB v0.27
-                                $pk = unpack("L", $pk) - 1;
+                                    $pk = unpack("L", $pk) - 1;
+                                }
+                                if ($returnValue) {
+                                    my $entry = {
+                                        KEY     => $pk,
+                                        CONTENT => thaw($v),
+                                    };
+                                    push @$ret, $entry;
+                                } else {
+                                    push @$ret, $pk;
+                                }
+                                $i++;
+                                $pk = -1;
                             }
-                            if ($returnValue) {
-                                my $entry = {
-                                    KEY     => $pk,
-                                    CONTENT => thaw($v),
-                                };
-                                push @$ret, $entry;
+                        }
+                        else {
+                            # $offset < 0
+                            # from the bottom
+                            if (-$offset+$n < $dup_count) {
+                                OFFSET:
+                                for (my $i = 0; $rc == 0; 
+                                     $rc = $cursor->c_pget(
+                                         $k, $pk, $v, DB_NEXT_DUP)) {
+                                    last OFFSET if 
+                                      $i == $dup_count+$offset-$n+1;
+                                }
                             }
-                            else {
-                                push @$ret, $pk;
+                            FETCH:
+                            for (my $i = 0; $rc == 0; 
+                                 $rc = $cursor->c_pget(
+                                     $k, $pk, $v, DB_NEXT_DUP)) {
+                                last FETCH if $i == $n;
+                                if ($BerkeleyDB::VERSION < 0.29) {
+                                    # Bug fix for BerkeleyDB v0.27
+                                    $pk = unpack("L", $pk) - 1;
+                                }
+                                if ($returnValue) {
+                                    my $entry = { 
+                                        KEY     => $pk,
+                                        CONTENT => thaw($v),
+                                    };
+                                    push @$ret, $entry;
+                                }
+                                else {
+                                    push @$ret, $pk;
+                                }
+                                $i++;
+                                $pk = -1;
                             }
-                            $i++;
-                            $pk = -1;
                         }
                         return $ret;
                     }
@@ -1167,6 +1213,8 @@ $number            : specify the number of record to fetch;
 
 $offset            : specify the offset to start for $number.
 
+$offset can be a negative value, retrieving in reverse order.
+
 C<<
 BerkeleyDB::SecIndices::Accessor::->get_students_by_class($sec_key) >> 
 
@@ -1270,11 +1318,17 @@ _ALL_ error check flags is integer. Once the returned value of
 subroutine is a reference or string, such code C<< $ret == EGET >>
 will get a warning message. 
 
+B<NO BerkeleyDB::Queue support>.
+
 =head1 TODO
 
 Traditional transaction mode support.
 
 UPD2 similar to PUT2.
+
+Method to export a cursor.
+
+BerkeleyDB::Queue support.
 
 =head1 SEE ALSO
 
