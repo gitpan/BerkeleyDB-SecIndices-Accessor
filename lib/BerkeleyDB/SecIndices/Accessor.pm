@@ -16,7 +16,7 @@ our @EXPORT_OK = ( @{ $EXPORT_TAGS{'const'} } );
 
 our @EXPORT = qw(EGET EGTS EEPT EPUT ELCK EUPD);
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 use Carp qw(croak);
 use BerkeleyDB;
@@ -640,12 +640,14 @@ BEGIN {
                     if ($n and defined $offset) {
                         # splice
                         if ($offset >= 0) {
-                            OFFSET:
-                            for (my $i = 0; $rc == 0; 
-                                 $rc = $cursor->c_pget(
-                                     $k, $pk, $v, DB_NEXT_DUP)) {
-                                last OFFSET if $i == $offset;
-                                $i++;
+                            if ($offset > 0) {
+                                OFFSET:
+                                for (my $i = 0; $rc == 0; 
+                                     $rc = $cursor->c_pget(
+                                         $k, $pk, $v, DB_NEXT_DUP)) {
+                                    last OFFSET if $i == $offset;
+                                    $i++;
+                                }
                             }
                             FETCH:
                             for (my $i = 0; $rc == 0; 
@@ -671,14 +673,14 @@ BEGIN {
                         }
                         else {
                             # $offset < 0
-                            # from the bottom
-                            if (-$offset+$n < $dup_count) {
+                            if ($dup_count > -$offset) {
                                 OFFSET:
-                                for (my $i = 0; $rc == 0; 
+                                for (my $i = 1; $rc == 0; 
                                      $rc = $cursor->c_pget(
                                          $k, $pk, $v, DB_NEXT_DUP)) {
                                     last OFFSET if 
-                                      $i == $dup_count+$offset-$n+1;
+                                      $i == $dup_count+$offset;
+                                    $i++;
                                 }
                             }
                             FETCH:
