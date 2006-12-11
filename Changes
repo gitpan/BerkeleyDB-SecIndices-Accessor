@@ -1,6 +1,8 @@
 Revision history for Perl extension BerkeleyDB::SecIndices::Accessor.
 
-0.05 bug fix on splice
+0.06  fix on splice index by index
+
+0.05  bug fix on splice
 
 0.04  negative offset support
 

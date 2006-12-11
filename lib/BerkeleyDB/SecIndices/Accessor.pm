@@ -16,7 +16,7 @@ our @EXPORT_OK = ( @{ $EXPORT_TAGS{'const'} } );
 
 our @EXPORT = qw(EGET EGTS EEPT EPUT ELCK EUPD);
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 use Carp qw(croak);
 use BerkeleyDB;
@@ -600,7 +600,7 @@ BEGIN {
                   sub { __PACKAGE__->$count(@_); };
                 $STUBS->{$i}->{COUNTDUP}->{lc($DB->{$i}->{SUBS}->[$j])}
                   = sub { __PACKAGE__->$countdup(@_); };
-                
+
                 *$get = sub {
                     # FIXME ugly api..
                     # TODO hash param
@@ -608,6 +608,7 @@ BEGIN {
                          $n, $offset ) = @_;
                     $returnValue ||= 0;
                     croak("undefined key: $k") unless defined $k;
+                    return [] if defined $n and $n <= 0;
                     my $key = $makekey->($i, $DB->{$i}->{SUBS}->[$j]);
                     #print "key = ", $key, "\n";
                     my ( $rc, $pk, $v );
@@ -637,6 +638,10 @@ BEGIN {
                         $cursor->c_close();
                         croak("cannot count duplicate keys");
                     }
+                    # offset out of range
+                    return $ret if defined $offset and 
+                      $offset < 0 and -$offset >= $dup_count;
+                    
                     if ($n and defined $offset) {
                         # splice
                         if ($offset >= 0) {
@@ -649,10 +654,9 @@ BEGIN {
                                     $i++;
                                 }
                             }
-                            FETCH:
-                            for (my $i = 0; $rc == 0; 
-                                 $rc = $cursor->c_pget(
-                                     $k, $pk, $v, DB_NEXT_DUP)) {
+                            my $i = 0;
+                            FETCH: 
+                            {
                                 last FETCH if $i == $n;
                                 if ($BerkeleyDB::VERSION < 0.29) {
                                 # Bug fix for BerkeleyDB v0.27
@@ -669,25 +673,33 @@ BEGIN {
                                 }
                                 $i++;
                                 $pk = -1;
+                                redo FETCH if $cursor->c_pget(
+                                    $k, $pk, $v, DB_NEXT_DUP) == 0;
                             }
                         }
                         else {
                             # $offset < 0
-                            if ($dup_count > -$offset) {
+                            my ( $start_index, $end_index );
+                            if ($n >= $dup_count+$offset) {
+                                $start_index = 0;
+                                $end_index = $dup_count+$offset;
+                            }
+                            else {
+                                $end_index = $dup_count+$offset+1;
+                                $start_index = $end_index-$n;
+                            }
+                            if ($start_index > 0) {
                                 OFFSET:
-                                for (my $i = 1; $rc == 0; 
+                                for (my $i = 0; $rc == 0; 
                                      $rc = $cursor->c_pget(
                                          $k, $pk, $v, DB_NEXT_DUP)) {
-                                    last OFFSET if 
-                                      $i == $dup_count+$offset;
-                                    $i++;
+                                    last OFFSET if $i++ == $start_index;
                                 }
                             }
-                            FETCH:
-                            for (my $i = 0; $rc == 0; 
-                                 $rc = $cursor->c_pget(
-                                     $k, $pk, $v, DB_NEXT_DUP)) {
-                                last FETCH if $i == $n;
+                            my $i = $start_index;
+                            FETCH: 
+                            {
+                                last FETCH if $i > $end_index;
                                 if ($BerkeleyDB::VERSION < 0.29) {
                                     # Bug fix for BerkeleyDB v0.27
                                     $pk = unpack("L", $pk) - 1;
@@ -704,15 +716,16 @@ BEGIN {
                                 }
                                 $i++;
                                 $pk = -1;
+                                redo FETCH if $cursor->c_pget(
+                                    $k, $pk, $v, DB_NEXT_DUP) == 0;
                             }
                         }
                         return $ret;
                     }
                     else {
                         my $last;
-                        for (; $rc == 0; 
-                             $rc = $cursor->c_pget(
-                                 $k, $pk, $v, DB_NEXT_DUP)) {
+                        FETCH: 
+                        {
                             if ($BerkeleyDB::VERSION < 0.29) {
                                 # Bug fix for BerkeleyDB v0.27
                                 $pk = unpack("L", $pk) - 1;
@@ -729,6 +742,8 @@ BEGIN {
                             }
                             $last = $entry;
                             $pk = -1;
+                            redo FETCH if $cursor->c_pget(
+                                $k, $pk, $v, DB_NEXT_DUP) == 0;
                         }
                         $cursor->c_close();
                         if (not $lastone) {
